@@ -107,8 +107,9 @@ def frame_name(number: int, total: int) -> str:
 
 
 def extract_audio(path):
-    clip = VideoFileClip(path)
-    clip.audio.write_audiofile(f'{TEMP_DIR}/.audio.mp4')
+    full_path = os.path.abspath(path)
+    clip = VideoFileClip(full_path)
+    clip.audio.write_audiofile(f'{TEMP_DIR}audio.mp4', codec='pcm_s32le')
 
 
 async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font):
@@ -170,16 +171,14 @@ def main():
     chars_count = y // FONT_WIDTH
     font = PIL.ImageFont.truetype("consola.ttf", size=FONT_SIZE)
 
-    print("Extracting audio...")
-    extract_audio(in_path)
+    # print("Extracting audio...")
+    # extract_audio(in_path)
 
-    # loop = asyncio.get_event_loop()
-    # loop.run_until_complete(prepare_frames(video, (x, y, c), frame_count, rows_count, chars_count, font))
     asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count, chars_count, font))
 
     images = [os.path.join(FRAMES_DIR, img) for img in os.listdir(FRAMES_DIR) if img.endswith('.png')]
     clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(images, fps=fps)
-    clip.audio = AudioFileClip(f'{TEMP_DIR}/.audio.mp4')
+    # clip.audio = AudioFileClip(f'{TEMP_DIR}/.audio.mp4')
     clip.write_videofile(out_path)
 
     prepare_directories(TEMP_DIR)
