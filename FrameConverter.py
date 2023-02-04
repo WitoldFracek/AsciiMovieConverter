@@ -30,7 +30,7 @@ def open_video_capture(path: str):
     raise FileNotFoundError(f'No such file or directory: "{path}"')
 
 
-def get_video_details(video):
+def get_video_details(video: cv2.VideoCapture):
     fps = video.get(cv2.CAP_PROP_FPS)
     frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count / fps
@@ -127,7 +127,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', flush=True)
+    print(f'{prefix} |{bar}| {percent}% {suffix}')
     sys.stdout.flush()
     if iteration == total:
         print()
@@ -143,6 +143,7 @@ def get_program_args():
     parser.add_argument('-as', '--asciiset', type=str, choices=['short', 'medium', 'long'],
                         required=False, default='medium')
     parser.add_argument('-cs', '--customset', type=str, required=False, default=None)
+    parser.add_argument('-r', '--reverse', action='store_true')
     return parser.parse_args()
 
 
@@ -173,6 +174,8 @@ def main():
     font_size = args.fontsize
     font_width = font_size + 1
     ascii_set = get_ascii_set(args)
+    if args.reverse:
+        ascii_set = ascii_set[::-1]
 
     video = open_video_capture(in_path)
     fps, frame_count, duration = get_video_details(video)
