@@ -1,11 +1,12 @@
 import asyncio
 import io
 import math
-from typing import Generator
-
+from pathlib import Path
+import tempfile
+from argparse import ArgumentParser
 import PIL.ImageFont
 import aiofiles as aiofiles
-from PIL import Image, ImageOps
+from PIL import Image
 import cv2
 import os
 import sys
@@ -16,30 +17,11 @@ import moviepy.video.io.ImageSequenceClip
 from PIL.Image import Dither
 from PIL.ImageDraw import ImageDraw
 
-# ASCII = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+ASCII_LONG = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+ASCII_MEDIUM = ASCII_LONG[0::2]
+ASCII_SHORT = " .<c73xek#■"
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
-
-ASCII = " .<c73xek#■"
-CHARS = len(ASCII)
-FONT_SIZE = 15
-FONT_WIDTH = 16
-
-TEMP_DIR = './temp/'
-TEMP_FILE = './temp/temp.'
-FRAMES_DIR = './frames/'
-
-
-def copy_file(path, ext='mp4'):
-    if os.path.exists(path):
-        copy_path = f'{TEMP_FILE}{ext}'
-        if not os.path.exists(TEMP_DIR):
-            os.mkdir(TEMP_DIR)
-        if os.path.exists(copy_path):
-            os.remove(copy_path)
-        shutil.copy2(path, copy_path)
-        return copy_path
-    raise FileNotFoundError(f'No such file or directory: "{path}"')
 
 
 def open_video_capture(path: str):
@@ -69,29 +51,22 @@ def pixelate(image: Image.Image, target_x, target_y) -> Image:
     return im
 
 
-def get_ascii_representation(image: Image.Image) -> list[str]:
+def get_ascii_representation(image: Image.Image, ascii_set: str) -> list[str]:
     ret = []
+    chars = len(ascii_set)
     x, y = image.size
     for i in range(y):
         row = ''
         for j in range(x):
-            row += ASCII[image.getpixel((j, i)) * CHARS // 256] * 2
+            row += ascii_set[image.getpixel((j, i)) * chars // 256] * 2
         ret.append(row)
     return ret
 
 
-def asciify(frame: np.ndarray, rows_count: int, chars_count: int) -> list[str]:
+def asciify(frame: np.ndarray, rows_count: int, chars_count: int, ascii_set: str) -> list[str]:
     image = Image.fromarray(frame)
     pixelated = pixelate(image, rows_count, chars_count)
-    return get_ascii_representation(pixelated)
-
-
-def prepare_directories(path):
-    if os.path.exists(path):
-        for file in os.listdir(path):
-            os.remove(os.path.join(path, file))
-    else:
-        os.mkdir(path)
+    return get_ascii_representation(pixelated, ascii_set)
 
 
 def make_empty_image(shape: tuple[int, int, int]):
@@ -106,32 +81,33 @@ def frame_name(number: int, total: int) -> str:
     return "0" * (int(math.log10(total)) - len(str(number)) + 1) + str(number)
 
 
-def extract_audio(path):
+def extract_audio(path, temp_dir: Path):
     full_path = os.path.abspath(path)
     clip = VideoFileClip(full_path)
-    clip.audio.write_audiofile(f'{TEMP_DIR}audio.mp4', codec='pcm_s32le')
+    clip.audio.write_audiofile(str(temp_dir/'audio.mp3'))
 
 
-async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font):
+async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font, font_size,
+                         frames_dir: Path, ascii_set: str):
     print(f'Preparing frames...\nTotal: {frame_count}')
     print_progress_bar(0, frame_count)
     counter = 0
     for frame in frame_generator(video):
-        asciified = asciify(frame, rows_count, chars_count)
+        asciified = asciify(frame, rows_count, chars_count, ascii_set)
         target_image, canvas = make_empty_image(img_shape)
 
         for i, row in enumerate(asciified):
-            canvas.text((0, i * FONT_SIZE), row, fill=(255, 255, 255), font=font)
+            canvas.text((0, i * font_size), row, fill=(255, 255, 255), font=font)
 
         buffer = io.BytesIO()
         target_image.save(buffer, format='png')
-        await image_save(f'{FRAMES_DIR}fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
+        await image_save(frames_dir/f'fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
         print_progress_bar(counter, frame_count)
         counter += 1
 
 
-async def image_save(path: str, image: memoryview):
-    async with aiofiles.open(path, 'wb') as file:
+async def image_save(path: Path, image: memoryview):
+    async with aiofiles.open(str(path), 'wb') as file:
         await file.write(image)
 
 
@@ -151,38 +127,76 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', flush=True)
+    sys.stdout.flush()
     if iteration == total:
         print()
 
 
-def main():
-    prepare_directories(TEMP_DIR)
-    prepare_directories(FRAMES_DIR)
+def get_program_args():
+    parser = ArgumentParser(prog='ASCII Movie Converter',
+                            description='Given an mp4 file it converts it to '
+                                        'a video clip made out of ASCII characters.')
+    parser.add_argument('input_file')
+    parser.add_argument('output_file')
+    parser.add_argument('-fs', '--fontsize', type=int, required=False, default=15)
+    parser.add_argument('-as', '--asciiset', type=str, choices=['short', 'medium', 'long'],
+                        required=False, default='medium')
+    parser.add_argument('-cs', '--customset', type=str, required=False, default=None)
+    return parser.parse_args()
 
-    in_path = sys.argv[1]
-    out_path = sys.argv[2]
+
+def get_ascii_set(args):
+    if args.customset:
+        return args.customset
+    if args.asciiset == 'short':
+        return ASCII_SHORT
+    if args.asciiset == 'medium':
+        return ASCII_MEDIUM
+    if args.asciiset == 'long':
+        return ASCII_LONG
+    raise Exception(f'Invalid value gor ascii set "{args.asciiset}". Should be one of those: short, medium, long')
+
+
+def main():
+    working_dir = Path(tempfile.mktemp())
+    working_dir.mkdir()
+    temp_dir = working_dir/'temp'
+    temp_dir.mkdir()
+    frames_dir = working_dir/'frames'
+    frames_dir.mkdir()
+
+    args = get_program_args()
+
+    in_path = args.input_file
+    out_path = args.output_file
+    font_size = args.fontsize
+    font_width = font_size + 1
+    ascii_set = get_ascii_set(args)
+
     video = open_video_capture(in_path)
     fps, frame_count, duration = get_video_details(video)
 
     frame: np.ndarray
     x, y, c = next(frame_generator(video)).shape
-    rows_count = x // FONT_SIZE
-    chars_count = y // FONT_WIDTH
-    font = PIL.ImageFont.truetype("consola.ttf", size=FONT_SIZE)
+    rows_count = x // font_size
+    chars_count = y // font_width
+    font = PIL.ImageFont.truetype("consola.ttf", size=font_size)
 
-    # print("Extracting audio...")
-    # extract_audio(in_path)
+    print("Extracting audio...")
+    extract_audio(in_path, temp_dir)
 
-    asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count, chars_count, font))
+    print("Preparing frames...")
+    asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count,
+                               chars_count, font, font_size, frames_dir, ascii_set))
 
-    images = [os.path.join(FRAMES_DIR, img) for img in os.listdir(FRAMES_DIR) if img.endswith('.png')]
+    print("Loading images..")
+    images = [str(frames_dir/img) for img in os.listdir(str(frames_dir)) if img.endswith('.png')]
     clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(images, fps=fps)
-    # clip.audio = AudioFileClip(f'{TEMP_DIR}/.audio.mp4')
-    clip.write_videofile(out_path)
+    clip.audio = AudioFileClip(str(temp_dir/f'audio.mp3'))
+    clip.write_videofile(str(out_path))
 
-    prepare_directories(TEMP_DIR)
-    prepare_directories(FRAMES_DIR)
+    shutil.rmtree(str(working_dir))
 
 
 if __name__ == '__main__':
