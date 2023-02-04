@@ -12,6 +12,6 @@ output_file - path to the location where the converted video should be saved.
 -h - pritns out help page.
 -fs / --fontsize - sets the font size for ASCII characters. For smaller characters the 'asciified' resolution of the video will be better and the conversion will take more time. Defaults to 15.
 -as / --asciiset - choice: short, medium, long. Specifies the buildin set of characters to use in conversion.
-  short: " .<c73xek#■"
-  medium: ""
-  long: " .'\`^\",:;Il!i><~+\_-?][}{1)(|\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao\*#MW&8%B@$"
+  short: `" .<c73xek#■"`
+  medium: `""`
+  long: `" .'\`^\",:;Il!i><~+\_-?][}{1)(|\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao\*#MW&8%B@$"`
