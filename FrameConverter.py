@@ -6,13 +6,14 @@ import tempfile
 from argparse import ArgumentParser
 import PIL.ImageFont
 import aiofiles as aiofiles
-from PIL import Image
+from PIL import Image, ImageColor
 import cv2
 import os
 import sys
 import numpy as np
 import shutil
 import moviepy.video.io.ImageSequenceClip
+from tqdm import tqdm
 # ASCII = ['  ', '..', '<<', 'cc', '77', '33', 'xx', 'ee', 'kk', '##', '■■']
 from PIL.Image import Dither
 from PIL.ImageDraw import ImageDraw
@@ -69,9 +70,11 @@ def asciify(frame: np.ndarray, rows_count: int, chars_count: int, ascii_set: str
     return get_ascii_representation(pixelated, ascii_set)
 
 
-def make_empty_image(shape: tuple[int, int, int]):
+def make_empty_image(shape: tuple[int, int, int], rgb: tuple[int, int, int]):
     x, y, colors = shape
-    empty_arr: np.ndarray = np.full(x * y * colors, fill_value=0).reshape(shape)
+    # empty_arr: np.ndarray = np.full(x * y, fill_value=np.array([r, g, b]).reshape((1, -1))).reshape((x, y, -1))
+    empty_arr: np.ndarray = np.zeros((x, y, 3))
+    empty_arr[:, :, :] = rgb
     target_image: Image.Image = Image.fromarray(empty_arr.astype('uint8'), 'RGB')
     canvas: ImageDraw = ImageDraw(target_image)
     return target_image, canvas
@@ -84,26 +87,34 @@ def frame_name(number: int, total: int) -> str:
 def extract_audio(path, temp_dir: Path):
     full_path = os.path.abspath(path)
     clip = VideoFileClip(full_path)
-    clip.audio.write_audiofile(str(temp_dir/'audio.mp3'))
+    clip.audio.write_audiofile(str(temp_dir/'audio.mp3'), verbose=False)
+
+
+def has_audio(path) -> bool:
+    full_path = os.path.abspath(path)
+    clip = VideoFileClip(full_path)
+    return clip.audio is not None
 
 
 async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font, font_size,
-                         frames_dir: Path, ascii_set: str):
-    print(f'Preparing frames...\nTotal: {frame_count}')
+                         frames_dir: Path, ascii_set: str, text_fill: tuple[int, int, int],
+                         background_fill: tuple[int, int, int]):
+    print(f'Total: {frame_count}')
     print_progress_bar(0, frame_count)
     counter = 0
     for frame in frame_generator(video):
         asciified = asciify(frame, rows_count, chars_count, ascii_set)
-        target_image, canvas = make_empty_image(img_shape)
+        target_image, canvas = make_empty_image(img_shape, background_fill)
 
         for i, row in enumerate(asciified):
-            canvas.text((0, i * font_size), row, fill=(255, 255, 255), font=font)
+            canvas.text((0, i * font_size), row, fill=text_fill, font=font)
 
         buffer = io.BytesIO()
         target_image.save(buffer, format='png')
         await image_save(frames_dir/f'fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
         print_progress_bar(counter, frame_count)
         counter += 1
+    print_progress_bar(frame_count, frame_count)
 
 
 async def image_save(path: Path, image: memoryview):
@@ -127,10 +138,11 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    print(f'{prefix} |{bar}| {percent}% {suffix}')
     sys.stdout.flush()
-    if iteration == total:
-        print()
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    if iteration >= total:
+        sys.stdout.flush()
+        sys.stdout.write(f'\r{prefix} |{fill * length}| 100% {suffix}\n')
 
 
 def get_program_args():
@@ -144,6 +156,10 @@ def get_program_args():
                         required=False, default='medium')
     parser.add_argument('-cs', '--customset', type=str, required=False, default=None)
     parser.add_argument('-r', '--reverse', action='store_true')
+    parser.add_argument('-fg', '--foreground', type=int, nargs=3, dest='fgc', required=False)
+    parser.add_argument('-bg', '--background', type=int, nargs=3, dest='bgc', required=False)
+    parser.add_argument('--fghex', type=str, required=False)
+    parser.add_argument('--bghex', type=str, required=False)
     return parser.parse_args()
 
 
@@ -159,6 +175,58 @@ def get_ascii_set(args):
     raise Exception(f'Invalid value gor ascii set "{args.asciiset}". Should be one of those: short, medium, long')
 
 
+def are_args_valid(in_path, out_path, font_size, text_fill, background_fill):
+    is_ok = True
+    if not os.path.exists(in_path):
+        print(f'Path does not exist {in_path}')
+        is_ok = False
+    if os.path.exists(out_path):
+        print(f'File {out_path} already exists. It\'ll be overwritten.')
+    if font_size < 1:
+        print('Font size cannot be less than 1.')
+        is_ok = False
+    if not is_color_valid(*text_fill):
+        print('Invalid rgb values for foreground color. Be sure values range between 0 and 255.')
+        is_ok = False
+    if not is_color_valid(*background_fill):
+        print('Invalid rgb values for background color. Be sure values range between 0 and 255.')
+        is_ok = False
+    return is_ok
+
+
+def is_color_valid(r, g, b):
+    return 0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255
+
+
+def hex_to_rgb(hex_):
+    return ImageColor.getcolor(hex_, 'RGB')
+
+
+def get_colors(args):
+    fgr, fgg, fgb = 255, 255, 255
+    bgr, bgg, bgb = 0, 0, 0
+
+    if args.fgc:  # fgc - foreground color
+        fgr, fgg, fgb = args.fgc
+
+    if args.bgc:  # bgc - background color
+        bgr, bgg, bgb = args.bgc
+
+    if args.fghex:
+        hex_: str = args.fghex
+        if not hex_.startswith('#'):
+            hex_ = f'#{hex_}'
+        fgr, fgg, fgb = hex_to_rgb(hex_)
+
+    if args.bghex:
+        hex_: str = args.bghex
+        if not hex_.startswith('#'):
+            hex_ = f'#{hex_}'
+        bgr, bgg, bgb = hex_to_rgb(hex_)
+
+    return (fgr, fgg, fgb), (bgr, bgg, bgb)
+
+
 def main():
     working_dir = Path(tempfile.mktemp())
     working_dir.mkdir()
@@ -169,13 +237,16 @@ def main():
 
     args = get_program_args()
 
+    text_fill, background_fill = get_colors(args)
     in_path = args.input_file
     out_path = args.output_file
     font_size = args.fontsize
-    font_width = font_size + 1
+    font_width = font_size
     ascii_set = get_ascii_set(args)
     if args.reverse:
         ascii_set = ascii_set[::-1]
+    if not are_args_valid(in_path, out_path, font_size, text_fill, background_fill):
+        return
 
     video = open_video_capture(in_path)
     fps, frame_count, duration = get_video_details(video)
@@ -186,18 +257,21 @@ def main():
     chars_count = y // font_width
     font = PIL.ImageFont.truetype("consola.ttf", size=font_size)
 
-    print("Extracting audio...")
-    extract_audio(in_path, temp_dir)
+    has_sound = has_audio(in_path)
+    if has_sound:
+        print("Extracting audio...")
+        extract_audio(in_path, temp_dir)
 
     print("Preparing frames...")
     asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count,
-                               chars_count, font, font_size, frames_dir, ascii_set))
+                               chars_count, font, font_size, frames_dir, ascii_set, text_fill, background_fill))
 
     print("Loading images..")
-    images = [str(frames_dir/img) for img in os.listdir(str(frames_dir)) if img.endswith('.png')]
+    images = [str(frames_dir/img) for img in tqdm(os.listdir(str(frames_dir))) if img.endswith('.png')]
     clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(images, fps=fps)
-    clip.audio = AudioFileClip(str(temp_dir/f'audio.mp3'))
-    clip.write_videofile(str(out_path))
+    if has_sound:
+        clip.audio = AudioFileClip(str(temp_dir/f'audio.mp3'))
+    clip.write_videofile(str(out_path), verbose=False)
 
     shutil.rmtree(str(working_dir))
 
