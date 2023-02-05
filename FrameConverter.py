@@ -96,25 +96,47 @@ def has_audio(path) -> bool:
     return clip.audio is not None
 
 
-async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font, font_size,
-                         frames_dir: Path, ascii_set: str, text_fill: tuple[int, int, int],
-                         background_fill: tuple[int, int, int]):
+# async def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font, font_size,
+#                          frames_dir: Path, ascii_set: str, text_fill: tuple[int, int, int],
+#                          background_fill: tuple[int, int, int]):
+#     print(f'Total: {frame_count}')
+#     print_progress_bar(0, frame_count)
+#     counter = 0
+#     for frame in frame_generator(video):
+#         asciified = asciify(frame, rows_count, chars_count, ascii_set)
+#         target_image, canvas = make_empty_image(img_shape, background_fill)
+#
+#         for i, row in enumerate(asciified):
+#             canvas.text((0, i * font_size), row, fill=text_fill, font=font)
+#
+#         buffer = io.BytesIO()
+#         target_image.save(buffer, format='png')
+#         await image_save(frames_dir/f'fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
+#         print_progress_bar(counter, frame_count)
+#         counter += 1
+#     print_progress_bar(frame_count, frame_count)
+
+def prepare_frames(video, img_shape, frame_count, rows_count, chars_count, font, font_size,
+                   ascii_set: str, text_fill: tuple[int, int, int],
+                   background_fill: tuple[int, int, int]):
     print(f'Total: {frame_count}')
     print_progress_bar(0, frame_count)
     counter = 0
+    ret = []
     for frame in frame_generator(video):
         asciified = asciify(frame, rows_count, chars_count, ascii_set)
         target_image, canvas = make_empty_image(img_shape, background_fill)
 
         for i, row in enumerate(asciified):
             canvas.text((0, i * font_size), row, fill=text_fill, font=font)
-
-        buffer = io.BytesIO()
-        target_image.save(buffer, format='png')
-        await image_save(frames_dir/f'fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
+        ret.append(np.asarray(target_image))
+        # buffer = io.BytesIO()
+        # target_image.save(buffer, format='png')
+        # await image_save(frames_dir/f'fr{frame_name(counter, frame_count)}.png', buffer.getbuffer())
         print_progress_bar(counter, frame_count)
         counter += 1
     print_progress_bar(frame_count, frame_count)
+    return ret
 
 
 async def image_save(path: Path, image: memoryview):
@@ -232,8 +254,8 @@ def main():
     working_dir.mkdir()
     temp_dir = working_dir/'temp'
     temp_dir.mkdir()
-    frames_dir = working_dir/'frames'
-    frames_dir.mkdir()
+    # frames_dir = working_dir/'frames'
+    # frames_dir.mkdir()
 
     args = get_program_args()
 
@@ -241,7 +263,7 @@ def main():
     in_path = args.input_file
     out_path = args.output_file
     font_size = args.fontsize
-    font_width = font_size
+    font_width = max(1, font_size // 5 * 6)
     ascii_set = get_ascii_set(args)
     if args.reverse:
         ascii_set = ascii_set[::-1]
@@ -263,12 +285,14 @@ def main():
         extract_audio(in_path, temp_dir)
 
     print("Preparing frames...")
-    asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count,
-                               chars_count, font, font_size, frames_dir, ascii_set, text_fill, background_fill))
+    # asyncio.run(prepare_frames(video, (x, y, c), frame_count, rows_count,
+    #                            chars_count, font, font_size, frames_dir, ascii_set, text_fill, background_fill))
+    converted_frames = prepare_frames(video, (x, y, c), frame_count, rows_count,
+                                      chars_count, font, font_size, ascii_set, text_fill, background_fill)
 
     print("Loading images..")
-    images = [str(frames_dir/img) for img in tqdm(os.listdir(str(frames_dir))) if img.endswith('.png')]
-    clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(images, fps=fps)
+    # images = [str(frames_dir/img) for img in tqdm(os.listdir(str(frames_dir))) if img.endswith('.png')]
+    clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(converted_frames, fps=fps)
     if has_sound:
         clip.audio = AudioFileClip(str(temp_dir/f'audio.mp3'))
     clip.write_videofile(str(out_path), verbose=False)
